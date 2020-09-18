@@ -34,6 +34,32 @@ def get_gdrive_service(
             pickle.dump(creds, token)
     # return Google Drive API service
     return build('drive', 'v3', credentials=creds)
+def list_item_to_row(item):
+    """returns a tabulate-compatible row from a file object"""
+    # get the File ID
+    id = item["id"]
+    # get the name of file
+    name = item["name"]
+    try:
+        # parent directory ID
+        parents = "{} ({})".format(
+            item["parents"],
+            full_path(item["parents"]))
+    except:
+        # has no parrents
+        parents = "N/A"
+    try:
+        # get the size in nice bytes format (KB, MB, etc.)
+        size = get_size_format(int(item["size"]))
+    except:
+        # not a file, may be a folder
+        size = "N/A"
+    # get the Google Drive type of file
+    mime_type = item["mimeType"]
+    # get last modified date time
+    modified_time = item["modifiedTime"]
+
+    return ((id, name, parents, size, mime_type, modified_time))
 def list_files(items):
     """given items returned by Google Drive API, prints them in a tabular way"""
     if not items:
@@ -42,28 +68,7 @@ def list_files(items):
     else:
         rows = []
         for item in items:
-            # get the File ID
-            id = item["id"]
-            # get the name of file
-            name = item["name"]
-            try:
-                # parent directory ID
-                parents = item["parents"]
-            except:
-                # has no parrents
-                parents = "N/A"
-            try:
-                # get the size in nice bytes format (KB, MB, etc.)
-                size = get_size_format(int(item["size"]))
-            except:
-                # not a file, may be a folder
-                size = "N/A"
-            # get the Google Drive type of file
-            mime_type = item["mimeType"]
-            # get last modified date time
-            modified_time = item["modifiedTime"]
-            # append everything to the list
-            rows.append((id, name, parents, size, mime_type, modified_time))
+            rows.append(list_item_to_row(item))
         print("Files:")
         # convert to a human readable table
         table = tabulate(rows, headers=["ID", "Name", "Parents", "Size", "Type", "Modified Time"])
@@ -82,27 +87,42 @@ def get_size_format(b, factor=1024, suffix="B"):
         b /= factor
     return f"{b:.2f}Y{suffix}"
 
-def full_path(svc, p, tpath=[]):
+__path_cache = {}
+def full_path(svc, p):
     """
     trace src to root
     """
+
+    if p in __path_cache:
+        return __path_cache[p]
+
     files = svc.files()
     result = files.get(fileId=p, fields="name, parents").execute()
-    #print("AT ", result, "WITH ", tpath)
-    tpath.append(result['name'])
+
+    allPaths = []
     if 'parents' in result:
-        # for parent in result['parents']:
-        return full_path(svc, result['parents'][0], tpath)
+        for parentId in result['parents']:
+            parentPaths = full_path(svc, parentId)
+            __path_cache[parentId] = parentPaths.copy()
+
+            for i,parentPath in enumerate(parentPaths):
+                parentPaths[i] = "{}\\{}".format(parentPath, result['name'])
+
+            allPaths += parentPaths
     else:
-        tpath.reverse()
-        #print("FINAL PATH", tpath)
-        return "\\".join(tpath)
+        # base case, at root, return name
+        allPaths = [result['name']]
+
+    __path_cache[p] = allPaths
+    return allPaths
 
 def iterfiles(service, name=None,
-    is_folder=None, parent=None,
+    is_folder=None, parent=None, trashed=None,
     order_by='folder,name,createdTime',
-    fields="nextPageToken, files(id, name, mimeType, size, parents, modifiedTime)"):
+    fields="nextPageToken, files(id, name, mimeType, size, parents, modifiedTime, trashed)"):
     q = []
+    if trashed is not None:
+        q.append("trashed = {}".format(trashed))
     if name is not None:
         q.append("name = '%s'" % name.replace("'", "\\'"))
     if is_folder is not None:
